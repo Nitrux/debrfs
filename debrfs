@@ -30,9 +30,9 @@ set -e
 (( EUID != 0 )) && exec sudo -- "$0" "$@"
 
 
-# -- Define the path of the mkrfs configuration file
+# -- Define the path of the debrfs configuration file
 
-CONFIG_FILE=$(pwd)/.mkrfs.conf
+CONFIG_FILE=$(pwd)/.debrfs.conf
 
 
 # -- Load values from configuration file
