@@ -32,7 +32,7 @@ set -e
 
 # -- Define the path of the debrfs configuration file
 
-CONFIG_FILE=$(pwd)/.debrfs.conf
+CONFIG_FILE=/etc/debrfs.conf
 
 
 # -- Load values from configuration file
