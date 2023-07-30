@@ -62,8 +62,8 @@ debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$
 # -- Compress rootfs directory using TAR and XZ
 if [[ ! -f "$TAR_FILE" ]]; then
     echo "File not found! Creating..."
-    (cd "$ROOTFS_DIR" && tar -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
 else
     echo "File found! Cleaning..."
-    rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
 fi
