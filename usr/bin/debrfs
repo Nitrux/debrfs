@@ -1,4 +1,4 @@
-#! /bin/bash
+#!/bin/bash
 
 #############################################################################################################################################################################
 #   The license used for this file and its contents is: BSD-3-Clause                                                                                                        #
@@ -24,12 +24,17 @@
 
 
 # -- Check if running with root privileges or ask for sudo.
+
 (( EUID != 0 )) && exec sudo -- "$0" "$@"
 
+
 # -- Define the path of the debrfs configuration file.
+
 CONFIG_FILE=/etc/debrfs.conf
 
+
 # -- Load values from the configuration file
+
 if [[ -f $CONFIG_FILE ]]; then
     echo "Configuration file found! Loading..."
     # shellcheck source=/dev/null
@@ -39,7 +44,9 @@ else
     exit 1
 fi
 
-# -- Check if debootstrap is available, if not, install it
+
+# -- Check if debootstrap is available, if not, install it.
+
 if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
     echo "No $REQUIRED_PKG found. Installing $REQUIRED_PKG..."
     apt -y install --no-install-recommends "$REQUIRED_PKG"
@@ -47,7 +54,9 @@ else
     echo "Package $REQUIRED_PKG is already installed."
 fi
 
-# -- Create target directory for rootfs and use debootstrap to add content
+
+# -- Create target directory for rootfs and use debootstrap to add content.
+
 if [[ ! -d $ROOTFS_DIR ]]; then
     echo "Directory not found! Creating..."
     mkdir -p "$ROOTFS_DIR"
@@ -56,13 +65,18 @@ else
     rm -rf "$ROOTFS_DIR" && mkdir -p "$ROOTFS_DIR"
 fi
 
-# -- Run debootstrap to populate the rootfs directory
+
+# -- Run debootstrap to populate the rootfs directory.
+
 debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$ROOTFS_EXCLUDE" --arch "$ROOTFS_ARCH" --cache-dir=/tmp "$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR"
 
-# -- Compress rootfs directory using TAR and XZ
+
+# -- Compress rootfs directory using TAR and XZ.
+
 if [[ ! -f "$TAR_FILE" ]]; then
     echo "File not found! Creating..."
     (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    mv "$TAR_FILE" ../
 else
     echo "File found! Cleaning..."
     rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
