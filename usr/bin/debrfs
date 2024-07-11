@@ -77,7 +77,6 @@ debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$
 if [[ ! -f "$TAR_FILE" ]]; then
     echo "File not found! Creating..."
     (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
-    mv "$ROOTFS_DIR/$TAR_FILE" "$HOME"
 else
     echo "File found! Cleaning..."
     rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
