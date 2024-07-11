@@ -22,6 +22,7 @@
 #    STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.   #
 #############################################################################################################################################################################
 
+set -xeu
 
 # -- Check if running with root privileges or ask for sudo.
 
@@ -76,7 +77,7 @@ debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$
 if [[ ! -f "$TAR_FILE" ]]; then
     echo "File not found! Creating..."
     (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
-    mv "$TAR_FILE" ../
+    mv "$ROOTFS_DIR/$TAR_FILE" "$HOME"
 else
     echo "File found! Cleaning..."
     rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
