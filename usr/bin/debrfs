@@ -146,15 +146,19 @@ create_rootfs() {
 
     debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$ROOTFS_EXCLUDE" --arch "$ROOTFS_ARCH" --cache-dir=/tmp "$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR"
 
-    if [[ ! -f "$TAR_FILE" ]]; then
-        puts_warning "File not found! Creating..."
-        (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    ARCHIVE_DIR=$(dirname "$ROOTFS_DIR")
+    TAR_PATH="$ARCHIVE_DIR/$(basename "$TAR_FILE")"
+
+    if [[ ! -f "$TAR_PATH" ]]; then
+        puts_warning "File not found! Creating archive at $TAR_PATH..."
+        (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_PATH" --exclude="var/cache/apt/archives" .)
     else
-        puts_info "File found! Cleaning..."
-        rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+        puts_info "File found at $TAR_PATH! Cleaning and recreating..."
+        rm -rf "$TAR_PATH" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_PATH" --exclude="var/cache/apt/archives" .)
     fi
 
-    puts_success "Root filesystem creation completed successfully!"
+    puts_success "Root filesystem archive created at $TAR_PATH!"
+
 }
 
 
