@@ -22,7 +22,16 @@
 #    STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.   #
 #############################################################################################################################################################################
 
+
+# -- Exit on errors.
+
 set -eu
+
+
+# -- Set program name and version.
+
+TOOL_NAME="debrfs"
+
 
 # -- Check if running with root privileges or ask for sudo.
 
@@ -34,7 +43,7 @@ set -eu
 CONFIG_FILE=/etc/debrfs.conf
 
 
-# -- Load values from the configuration file
+# -- Load values from the configuration file.
 
 if [[ -f $CONFIG_FILE ]]; then
     echo "Configuration file found! Loading..."
@@ -46,38 +55,127 @@ else
 fi
 
 
-# -- Check if debootstrap is available, if not, install it.
+# -- Print informative messages to stderr.
 
-if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
-    echo "No $REQUIRED_PKG found. Installing $REQUIRED_PKG..."
-    apt -y install --no-install-recommends "$REQUIRED_PKG"
-else
-    echo "Package $REQUIRED_PKG is already installed."
+puts_info() {
+	if [ -n "$1" ]; then
+		printf "%s: \e[34mInfo:\e[0m %s\n" "$TOOL_NAME" "$*" >&2
+	fi
+}
+
+
+# -- Print success messages to stderr.
+
+puts_success() {
+	if [ -n "$1" ]; then
+		printf "%s: \e[32mSuccess:\e[0m %s\n" "$TOOL_NAME" "$*" >&2
+	fi
+}
+
+
+# -- Print error messages to stderr.
+
+puts_error() {
+	if [ -n "$1" ]; then
+		printf "%s: \e[31mError:\e[0m %b\n" "$TOOL_NAME" "$*" >&2
+	fi
+}
+
+
+# -- Print messages or text using multiple lines to stderr.
+
+print_message() {
+    if [ $# -eq 0 ]; then
+        printf "\n" >&2
+    else
+        printf "%s\n" "$@" >&2
+    fi
+}
+
+
+# -- Print warning messages to stderr.
+
+puts_warning() {
+    if [ -n "$1" ]; then
+        printf "%s: \e[33mWarning:\e[0m %s\n" "$TOOL_NAME" "$*" >&2
+    fi
+}
+
+
+# -- Function to display help message.
+
+show_help() {
+    cat <<EOF
+
+Description:
+    Create small Debian rootfs TAR files.
+
+Report bugs at: https://github.com/Nitrux/nuts/issues.
+
+Usage: $(basename "$0") <command>
+
+Commands:
+  create    Create and compress the root filesystem (rootfs).
+  help      Display this help message.
+
+Examples:
+  sudo $(basename "$0") create
+EOF
+}
+
+
+# -- Function to create the root filesystem.
+
+create_rootfs() {
+    puts_info "Starting root filesystem creation process..."
+
+    if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
+        puts_warning "No $REQUIRED_PKG found. Installing $REQUIRED_PKG..."
+        apt -y install --no-install-recommends "$REQUIRED_PKG"
+    else
+        puts_info "Package $REQUIRED_PKG is already installed."
+    fi
+
+    if [[ ! -d $ROOTFS_DIR ]]; then
+        puts_warning "Directory not found! Creating..."
+        mkdir -p "$ROOTFS_DIR"
+    else
+        puts_info "Directory found! Cleaning..."
+        rm -rf "$ROOTFS_DIR" && mkdir -p "$ROOTFS_DIR"
+    fi
+
+    debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$ROOTFS_EXCLUDE" --arch "$ROOTFS_ARCH" --cache-dir=/tmp "$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR"
+
+    if [[ ! -f "$TAR_FILE" ]]; then
+        puts_warning "File not found! Creating..."
+        (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    else
+        puts_info "File found! Cleaning..."
+        rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
+    fi
+
+    puts_success "Root filesystem creation completed successfully!"
+}
+
+
+# -- Main script logic.
+
+if [[ $# -eq 0 ]]; then
+    echo "Error: No command provided." >&2
+    show_help
+    exit 1
 fi
 
-
-# -- Create target directory for rootfs and use debootstrap to add content.
-
-if [[ ! -d $ROOTFS_DIR ]]; then
-    echo "Directory not found! Creating..."
-    mkdir -p "$ROOTFS_DIR"
-else
-    echo "Directory found! Cleaning..."
-    rm -rf "$ROOTFS_DIR" && mkdir -p "$ROOTFS_DIR"
-fi
-
-
-# -- Run debootstrap to populate the rootfs directory.
-
-debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$ROOTFS_EXCLUDE" --arch "$ROOTFS_ARCH" --cache-dir=/tmp "$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR"
-
-
-# -- Compress rootfs directory using TAR and XZ.
-
-if [[ ! -f "$TAR_FILE" ]]; then
-    echo "File not found! Creating..."
-    (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
-else
-    echo "File found! Cleaning..."
-    rm -rf "$TAR_FILE" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_FILE" --exclude="var/cache/apt/archives" .)
-fi
+case "$1" in
+    create)
+        create_rootfs
+        ;;
+    help)
+        show_help
+        ;;
+    *)
+        echo "Error: Unknown command '$1'." >&2
+        show_help
+        exit 1
+        ;;
+esac
