@@ -1,26 +1,7 @@
 #!/usr/bin/env bash
 
-#############################################################################################################################################################################
-#   The license used for this file and its contents is: BSD-3-Clause                                                                                                        #
-#                                                                                                                                                                           #
-#   Copyright <2022-2024> <Uri Herrera <uri_herrera@nxos.org>>                                                                                                               #
-#                                                                                                                                                                           #
-#   Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:                          #
-#                                                                                                                                                                           #
-#    1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.                                        #
-#                                                                                                                                                                           #
-#    2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer                                      #
-#       in the documentation and/or other materials provided with the distribution.                                                                                         #
-#                                                                                                                                                                           #
-#    3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software                    #
-#       without specific prior written permission.                                                                                                                          #
-#                                                                                                                                                                           #
-#    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,                      #
-#    THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS                  #
-#    BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE                 #
-#    GOODS OR SERVICES; LOSS OF USE, DATA,   OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,                      #
-#    STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.   #
-#############################################################################################################################################################################
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright 2022-2025 <Nitrux Latinoamericana S.C. <hello@nxos.org>>
 
 
 # -- Exit on errors.
@@ -41,18 +22,6 @@ TOOL_NAME="debrfs"
 # -- Define the path of the debrfs configuration file.
 
 CONFIG_FILE=/etc/debrfs.conf
-
-
-# -- Load values from the configuration file.
-
-if [[ -f $CONFIG_FILE ]]; then
-    echo "Configuration file found! Loading..."
-    # shellcheck source=/dev/null
-    . "$CONFIG_FILE"
-else
-    echo "Configuration file not found! Exiting..." >&2
-    exit 1
-fi
 
 
 # -- Print informative messages to stderr.
@@ -102,6 +71,70 @@ puts_warning() {
 }
 
 
+# -- Load and validate configuration file.
+
+load_config() {
+    if [[ ! -f $CONFIG_FILE ]]; then
+        puts_error "Configuration file not found at $CONFIG_FILE"
+        exit 1
+    fi
+
+    puts_info "Loading configuration from $CONFIG_FILE..."
+
+    if grep -v '^#' "$CONFIG_FILE" | grep -v '^[[:space:]]*$' | grep -Ev '^[A-Z_][A-Z0-9_]*='; then
+        puts_error "Invalid configuration file format. Only variable assignments are allowed."
+        exit 1
+    fi
+
+    if grep -E '[;&|$`]' "$CONFIG_FILE" | grep -v '^#'; then
+        puts_error "Configuration file contains potentially dangerous characters (;, &, |, \$, \`)."
+        exit 1
+    fi
+
+    # shellcheck source=/dev/null
+    . "$CONFIG_FILE"
+
+    local required_vars=("REQUIRED_PKG" "ROOTFS_VARIANT" "ROOTFS_ARCH" "ROOTFS_SUITE" "ROOTFS_DIR" "ROOTFS_MIRROR" "TAR_FILE")
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            puts_error "Required variable $var is not set in configuration file."
+            exit 1
+        fi
+    done
+
+    puts_success "Configuration loaded successfully."
+}
+
+
+# -- Cleanup function to remove temporary directories.
+
+cleanup() {
+    if [[ -n "${ROOTFS_DIR:-}" ]] && [[ -d "$ROOTFS_DIR" ]] && [[ "${KEEP_ROOTFS:-false}" != "true" ]]; then
+        puts_info "Cleaning up temporary directory: $ROOTFS_DIR"
+        rm -rf "$ROOTFS_DIR"
+    fi
+}
+
+
+# -- Function to create tar archive.
+
+create_archive() {
+    local tar_path="$1"
+    
+    puts_info "Creating compressed archive at $tar_path..."
+    
+    local compression_tool="${COMPRESSION_TOOL:-xz}"
+    local compression_level="${COMPRESSION_LEVEL:-9}"
+    
+    if ! (cd "$ROOTFS_DIR" && tar -I "$compression_tool -$compression_level" -cvf "$tar_path" --exclude="var/cache/apt/archives" .); then
+        puts_error "Failed to create archive."
+        return 1
+    fi
+    
+    return 0
+}
+
+
 # -- Function to display help message.
 
 show_help() {
@@ -130,42 +163,99 @@ create_rootfs() {
     puts_info "Starting root filesystem creation process..."
 
     if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
-        puts_warning "No $REQUIRED_PKG found. Installing $REQUIRED_PKG..."
-        apt -y install --no-install-recommends "$REQUIRED_PKG"
+        puts_warning "Package $REQUIRED_PKG not found. Installing..."
+        if ! apt -y install --no-install-recommends "$REQUIRED_PKG"; then
+            puts_error "Failed to install $REQUIRED_PKG."
+            exit 1
+        fi
     else
         puts_info "Package $REQUIRED_PKG is already installed."
     fi
 
     if [[ ! -d $ROOTFS_DIR ]]; then
-        puts_warning "Directory not found! Creating..."
-        mkdir -p "$ROOTFS_DIR"
+        puts_info "Creating rootfs directory: $ROOTFS_DIR"
+        if ! mkdir -p "$ROOTFS_DIR"; then
+            puts_error "Failed to create directory: $ROOTFS_DIR"
+            exit 1
+        fi
     else
-        puts_info "Directory found! Cleaning..."
-        rm -rf "$ROOTFS_DIR" && mkdir -p "$ROOTFS_DIR"
+        puts_warning "Directory exists. Cleaning: $ROOTFS_DIR"
+        if ! rm -rf "$ROOTFS_DIR" || ! mkdir -p "$ROOTFS_DIR"; then
+            puts_error "Failed to clean directory: $ROOTFS_DIR"
+            exit 1
+        fi
     fi
 
-    debootstrap --variant="$ROOTFS_VARIANT" --include="$ROOTFS_INCLUDE" --exclude="$ROOTFS_EXCLUDE" --arch "$ROOTFS_ARCH" --cache-dir=/tmp "$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR"
-
-    ARCHIVE_DIR=$(dirname "$ROOTFS_DIR")
-    TAR_PATH="$ARCHIVE_DIR/$(basename "$TAR_FILE")"
-
-    if [[ ! -f "$TAR_PATH" ]]; then
-        puts_warning "File not found! Creating archive at $TAR_PATH..."
-        (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_PATH" --exclude="var/cache/apt/archives" .)
-    else
-        puts_info "File found at $TAR_PATH! Cleaning and recreating..."
-        rm -rf "$TAR_PATH" && (cd "$ROOTFS_DIR" && tar --warning=no-file-changed -I 'xz -9' -cvf "$TAR_PATH" --exclude="var/cache/apt/archives" .)
+    puts_info "Running debootstrap (this may take a while)..."
+    puts_info "Variant: $ROOTFS_VARIANT | Arch: $ROOTFS_ARCH | Suite: $ROOTFS_SUITE"
+    
+    local debootstrap_cmd=(
+        debootstrap
+        --variant="$ROOTFS_VARIANT"
+        --arch="$ROOTFS_ARCH"
+        --cache-dir=/tmp
+    )
+    
+    if [[ -n "${ROOTFS_INCLUDE:-}" ]]; then
+        debootstrap_cmd+=(--include="$ROOTFS_INCLUDE")
+    fi
+    
+    if [[ -n "${ROOTFS_EXCLUDE:-}" ]]; then
+        debootstrap_cmd+=(--exclude="$ROOTFS_EXCLUDE")
+    fi
+    
+    debootstrap_cmd+=("$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR")
+    
+    if ! "${debootstrap_cmd[@]}"; then
+        puts_error "debootstrap failed. Check your configuration and network connection."
+        exit 1
     fi
 
-    puts_success "Root filesystem archive created at $TAR_PATH!"
+    puts_success "debootstrap completed successfully."
 
+    local archive_dir="${OUTPUT_DIR:-$(dirname "$ROOTFS_DIR")}"
+    if [[ ! -d "$archive_dir" ]]; then
+        puts_info "Creating output directory: $archive_dir"
+        mkdir -p "$archive_dir"
+    fi
+    
+    local tar_path
+    tar_path="$archive_dir/$(basename "$TAR_FILE")"
+
+    if [[ -f "$tar_path" ]]; then
+        puts_warning "Archive already exists at $tar_path. Removing..."
+        rm -f "$tar_path"
+    fi
+
+    if ! create_archive "$tar_path"; then
+        puts_error "Failed to create archive."
+        exit 1
+    fi
+
+    puts_success "Root filesystem archive created at $tar_path"
+    
+    if command -v du >/dev/null 2>&1; then
+        local size
+        size=$(du -h "$tar_path" | cut -f1)
+        puts_info "Archive size: $size"
+    fi
 }
+
+
+# -- Load configuration before setting up trap.
+
+load_config
+
+
+# -- Set up cleanup trap after configuration is loaded.
+
+trap cleanup EXIT ERR
 
 
 # -- Main script logic.
 
 if [[ $# -eq 0 ]]; then
-    echo "Error: No command provided." >&2
+    puts_error "No command provided."
     show_help
     exit 1
 fi
@@ -178,7 +268,7 @@ case "$1" in
         show_help
         ;;
     *)
-        echo "Error: Unknown command '$1'." >&2
+        puts_error "Unknown command '$1'."
         show_help
         exit 1
         ;;
