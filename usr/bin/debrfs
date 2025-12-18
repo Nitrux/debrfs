@@ -162,6 +162,9 @@ EOF
 create_rootfs() {
     puts_info "Starting root filesystem creation process..."
 
+    local base_name="${TAR_NAME_BASE:-rootfs}"
+    TAR_FILE="${base_name}-$(date +%Y.%m.%d-%H.%M).tar.xz"
+
     if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
         puts_warning "Package $REQUIRED_PKG not found. Installing..."
         if ! apt -y install --no-install-recommends "$REQUIRED_PKG"; then
