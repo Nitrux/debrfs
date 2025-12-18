@@ -239,7 +239,7 @@ create_rootfs() {
         exit 1
     fi
 
-puts_info "Moving archive to $final_tar_path..."
+    puts_info "Moving archive to $final_tar_path..."
     if ! mv "$temp_tar_path" "$final_tar_path"; then
          puts_error "Failed to move archive to destination."
          exit 1
