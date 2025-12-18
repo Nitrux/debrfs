@@ -216,30 +216,41 @@ create_rootfs() {
 
     puts_success "debootstrap completed successfully."
 
-    local archive_dir="${OUTPUT_DIR:-$(dirname "$ROOTFS_DIR")}"
-    if [[ ! -d "$archive_dir" ]]; then
-        puts_info "Creating output directory: $archive_dir"
-        mkdir -p "$archive_dir"
-    fi
+    local final_dir="${OUTPUT_DIR:-$PWD}"
     
-    local tar_path
-    tar_path="$archive_dir/$(basename "$TAR_FILE")"
-
-    if [[ -f "$tar_path" ]]; then
-        puts_warning "Archive already exists at $tar_path. Removing..."
-        rm -f "$tar_path"
+    if [[ ! -d "$final_dir" ]]; then
+        puts_info "Creating output directory: $final_dir"
+        mkdir -p "$final_dir"
     fi
 
-    if ! create_archive "$tar_path"; then
+    local temp_tar_path
+    temp_tar_path="$(dirname "$ROOTFS_DIR")/$(basename "$TAR_FILE")"
+    
+    local final_tar_path
+    final_tar_path="$final_dir/$(basename "$TAR_FILE")"
+
+    if [[ -f "$final_tar_path" ]]; then
+        puts_warning "Archive already exists at $final_tar_path. Removing..."
+        rm -f "$final_tar_path"
+    fi
+
+    if ! create_archive "$temp_tar_path"; then
         puts_error "Failed to create archive."
         exit 1
     fi
 
-    puts_success "Root filesystem archive created at $tar_path"
+puts_info "Moving archive to $final_tar_path..."
+    if ! mv "$temp_tar_path" "$final_tar_path"; then
+         puts_error "Failed to move archive to destination."
+         exit 1
+    fi
+
+    puts_success "Root filesystem archive created at $final_tar_path"
     
-    if command -v du >/dev/null 2>&1; then
+    if command -v du >/dev/null 2>&1;
+    then
         local size
-        size=$(du -h "$tar_path" | cut -f1)
+        size=$(du -h "$final_tar_path" | cut -f1)
         puts_info "Archive size: $size"
     fi
 }
