@@ -24,7 +24,7 @@ TOOL_NAME="debrfs"
 CONFIG_FILE=/etc/debrfs.conf
 
 
-# -- Print informative messages to stderr.
+# -- Print messages to stderr.
 
 puts_info() {
 	if [ -n "$1" ]; then
