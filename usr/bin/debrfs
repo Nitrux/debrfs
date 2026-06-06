@@ -11,15 +11,14 @@ set -eu
 
 # -- Set program name and version.
 
-TOOL_NAME="debrfs"
+TOOL_NAME="Debrfs"
 CONFIG_SOURCE=""
 COMMAND=""
 
 
-# -- Define the default configuration directory and fallback file.
+# -- Define the default configuration directory.
 
 DEFAULT_CONFIG_DIR=/etc/debrfs.d
-DEFAULT_CONFIG_FILE=/etc/debrfs.conf
 
 
 # -- Print messages to stderr.
@@ -152,9 +151,11 @@ load_config_file() {
 
 load_config() {
     local -a config_files=()
-    local nullglob_state
+    local nullglob_was_set=0
 
-    nullglob_state="$(shopt -p nullglob)"
+    if shopt -q nullglob; then
+        nullglob_was_set=1
+    fi
     shopt -s nullglob
 
     if [[ -n "$CONFIG_SOURCE" ]]; then
@@ -165,11 +166,11 @@ load_config() {
         fi
     elif [[ -d "$DEFAULT_CONFIG_DIR" ]]; then
         config_files=("$DEFAULT_CONFIG_DIR"/*.conf)
-    elif [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
-        config_files=("$DEFAULT_CONFIG_FILE")
     fi
 
-    eval "$nullglob_state"
+    if [[ $nullglob_was_set -eq 0 ]]; then
+        shopt -u nullglob
+    fi
 
     if [[ ${#config_files[@]} -eq 0 ]]; then
         puts_error "No configuration files found."
