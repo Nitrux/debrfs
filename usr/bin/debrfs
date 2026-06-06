@@ -12,16 +12,14 @@ set -eu
 # -- Set program name and version.
 
 TOOL_NAME="debrfs"
+CONFIG_SOURCE=""
+COMMAND=""
 
 
-# -- Check if running with root privileges or ask for sudo.
+# -- Define the default configuration directory and fallback file.
 
-(( EUID != 0 )) && exec sudo -- "$0" "$@"
-
-
-# -- Define the path of the debrfs configuration file.
-
-CONFIG_FILE=/etc/debrfs.conf
+DEFAULT_CONFIG_DIR=/etc/debrfs.d
+DEFAULT_CONFIG_FILE=/etc/debrfs.conf
 
 
 # -- Print messages to stderr.
@@ -71,33 +69,121 @@ puts_warning() {
 }
 
 
-# -- Load and validate configuration file.
+# -- Parse command-line arguments.
 
-load_config() {
-    if [[ ! -f $CONFIG_FILE ]]; then
-        puts_error "Configuration file not found at $CONFIG_FILE"
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --conf)
+                if [[ $# -lt 2 ]]; then
+                    puts_error "Missing argument for --conf."
+                    exit 1
+                fi
+                CONFIG_SOURCE="$2"
+                shift 2
+                ;;
+            --conf=*)
+                CONFIG_SOURCE="${1#*=}"
+                shift
+                ;;
+            create|help)
+                if [[ -n "$COMMAND" ]]; then
+                    puts_error "Multiple commands provided."
+                    exit 1
+                fi
+                COMMAND="$1"
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                puts_error "Unknown option '$1'."
+                exit 1
+                ;;
+            *)
+                if [[ -z "$COMMAND" ]]; then
+                    COMMAND="$1"
+                    shift
+                else
+                    puts_error "Unexpected argument '$1'."
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+
+    if [[ $# -gt 0 ]]; then
+        puts_error "Unexpected arguments after '--'."
+        exit 1
+    fi
+}
+
+
+# -- Load and validate a single configuration file.
+
+load_config_file() {
+    local config_file="$1"
+
+    if [[ ! -r "$config_file" ]]; then
+        puts_error "Configuration file not found or not readable: $config_file"
         exit 1
     fi
 
-    puts_info "Loading configuration from $CONFIG_FILE..."
+    puts_info "Loading configuration from $config_file..."
 
-    if grep -v '^#' "$CONFIG_FILE" | grep -v '^[[:space:]]*$' | grep -Ev '^[A-Z_][A-Z0-9_]*='; then
-        puts_error "Invalid configuration file format. Only variable assignments are allowed."
+    if grep -nEv '^[[:space:]]*(#.*)?$|^[A-Z_][A-Z0-9_]*=.*$' "$config_file"; then
+        puts_error "Invalid configuration file format in $config_file. Only variable assignments are allowed."
         exit 1
     fi
 
-    if grep -E '[;&|$`]' "$CONFIG_FILE" | grep -v '^#'; then
-        puts_error "Configuration file contains potentially dangerous characters (;, &, |, \$, \`)."
+    if grep -E '[;&|$`]' "$config_file" | grep -vE '^[[:space:]]*#'; then
+        puts_error "Configuration file $config_file contains potentially dangerous characters (;, &, |, \$, \`)."
         exit 1
     fi
 
     # shellcheck source=/dev/null
-    . "$CONFIG_FILE"
+    . "$config_file"
+}
 
-    local required_vars=("REQUIRED_PKG" "ROOTFS_VARIANT" "ROOTFS_ARCH" "ROOTFS_SUITE" "ROOTFS_DIR" "ROOTFS_MIRROR" "TAR_FILE")
+
+# -- Load and validate configuration sources.
+
+load_config() {
+    local -a config_files=()
+    local nullglob_state
+
+    nullglob_state="$(shopt -p nullglob)"
+    shopt -s nullglob
+
+    if [[ -n "$CONFIG_SOURCE" ]]; then
+        if [[ -d "$CONFIG_SOURCE" ]]; then
+            config_files=("$CONFIG_SOURCE"/*.conf)
+        else
+            config_files=("$CONFIG_SOURCE")
+        fi
+    elif [[ -d "$DEFAULT_CONFIG_DIR" ]]; then
+        config_files=("$DEFAULT_CONFIG_DIR"/*.conf)
+    elif [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
+        config_files=("$DEFAULT_CONFIG_FILE")
+    fi
+
+    eval "$nullglob_state"
+
+    if [[ ${#config_files[@]} -eq 0 ]]; then
+        puts_error "No configuration files found."
+        exit 1
+    fi
+
+    for config_file in "${config_files[@]}"; do
+        load_config_file "$config_file"
+    done
+
+    local required_vars=("ROOTFS_VARIANT" "ROOTFS_ARCH" "ROOTFS_SUITE" "ROOTFS_DIR" "ROOTFS_MIRROR")
     for var in "${required_vars[@]}"; do
         if [[ -z "${!var:-}" ]]; then
-            puts_error "Required variable $var is not set in configuration file."
+            puts_error "Required variable $var is not set in configuration."
             exit 1
         fi
     done
@@ -145,7 +231,7 @@ Description:
 
 Report bugs at: https://github.com/Nitrux/nuts/issues.
 
-Usage: $(basename "$0") <command>
+Usage: $(basename "$0") [--conf FILE|DIR] <command>
 
 Commands:
   create    Create and compress the root filesystem (rootfs).
@@ -153,6 +239,7 @@ Commands:
 
 Examples:
   sudo $(basename "$0") create
+  sudo $(basename "$0") create --conf /etc/debrfs.d/minbase-testing-no-systemd.conf
 EOF
 }
 
@@ -162,17 +249,17 @@ EOF
 create_rootfs() {
     puts_info "Starting root filesystem creation process..."
 
-    local base_name="${TAR_NAME_BASE:-rootfs}"
+    local base_name="${TAR_NAME_BASE:-${TAR_FILE:-rootfs}}"
     TAR_FILE="${base_name}-$(date +%Y.%m.%d-%H.%M).tar.xz"
 
-    if ! dpkg -s "$REQUIRED_PKG" >/dev/null 2>&1; then
-        puts_warning "Package $REQUIRED_PKG not found. Installing..."
-        if ! apt -y install --no-install-recommends "$REQUIRED_PKG"; then
-            puts_error "Failed to install $REQUIRED_PKG."
+    if ! command -v debootstrap >/dev/null 2>&1; then
+        puts_warning "debootstrap not found. Installing..."
+        if ! apt -y install --no-install-recommends debootstrap; then
+            puts_error "Failed to install debootstrap."
             exit 1
         fi
     else
-        puts_info "Package $REQUIRED_PKG is already installed."
+        puts_info "debootstrap is already installed."
     fi
 
     if [[ ! -d $ROOTFS_DIR ]]; then
@@ -256,6 +343,24 @@ create_rootfs() {
 }
 
 
+# -- Parse arguments before loading configuration.
+
+parse_args "$@"
+
+
+# -- Display help before any privileged actions or configuration loading.
+
+if [[ "$COMMAND" == "help" ]]; then
+    show_help
+    exit 0
+fi
+
+
+# -- Check if running with root privileges or ask for sudo.
+
+(( EUID != 0 )) && exec sudo -- "$0" "$@"
+
+
 # -- Load configuration before setting up trap.
 
 load_config
@@ -268,13 +373,13 @@ trap cleanup EXIT ERR
 
 # -- Main script logic.
 
-if [[ $# -eq 0 ]]; then
+if [[ -z "$COMMAND" ]]; then
     puts_error "No command provided."
     show_help
     exit 1
 fi
 
-case "$1" in
+case "$COMMAND" in
     create)
         create_rootfs
         ;;
@@ -282,7 +387,7 @@ case "$1" in
         show_help
         ;;
     *)
-        puts_error "Unknown command '$1'."
+        puts_error "Unknown command '$COMMAND'."
         show_help
         exit 1
         ;;
