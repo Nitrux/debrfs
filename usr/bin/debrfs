@@ -14,6 +14,8 @@ set -eu
 TOOL_NAME="Debrfs"
 CONFIG_SOURCE=""
 COMMAND=""
+DEBUG_DEBOOTSTRAP=0
+DEBOOTSTRAP_CACHE_DIR=""
 
 
 # -- Define the default configuration directory.
@@ -83,6 +85,10 @@ parse_args() {
                 ;;
             --conf=*)
                 CONFIG_SOURCE="${1#*=}"
+                shift
+                ;;
+            --dbg-db)
+                DEBUG_DEBOOTSTRAP=1
                 shift
                 ;;
             create|help)
@@ -189,14 +195,37 @@ load_config() {
         fi
     done
 
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]] && [[ ! -d "$ROOTFS_DEBOOTSTRAP_DIR" ]]; then
-        puts_error "ROOTFS_DEBOOTSTRAP_DIR points to a missing directory: $ROOTFS_DEBOOTSTRAP_DIR"
-        exit 1
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
+        if [[ ! -d "$ROOTFS_DEBOOTSTRAP_DIR" ]]; then
+            puts_error "ROOTFS_DEBOOTSTRAP_DIR points to a missing directory: $ROOTFS_DEBOOTSTRAP_DIR"
+            exit 1
+        fi
+
+        if [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/functions" ]]; then
+            puts_error "ROOTFS_DEBOOTSTRAP_DIR is missing the expected functions file: $ROOTFS_DEBOOTSTRAP_DIR/functions"
+            exit 1
+        fi
+
+        if [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/scripts/$ROOTFS_SUITE" ]]; then
+            puts_error "ROOTFS_DEBOOTSTRAP_DIR is missing the suite script for $ROOTFS_SUITE: $ROOTFS_DEBOOTSTRAP_DIR/scripts/$ROOTFS_SUITE"
+            exit 1
+        fi
     fi
 
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]] && [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/$ROOTFS_SUITE" ]]; then
-        puts_error "ROOTFS_DEBOOTSTRAP_DIR does not contain a debootstrap script for suite $ROOTFS_SUITE: $ROOTFS_DEBOOTSTRAP_DIR/$ROOTFS_SUITE"
-        exit 1
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
+        local debootstrap_version
+        debootstrap_version="$(dpkg-query -W -f='${Version}' debootstrap 2>/dev/null || true)"
+
+        if [[ -z "$debootstrap_version" ]]; then
+            puts_error "Unable to determine the installed debootstrap package version."
+            exit 1
+        fi
+
+        if [[ "$debootstrap_version" != *devuan* ]]; then
+            puts_error "The installed debootstrap package is not the Devuan build: $debootstrap_version"
+            puts_error "This configuration uses ROOTFS_DEBOOTSTRAP_DIR, so debootstrap must be the Devuan-flavored package."
+            exit 1
+        fi
     fi
 
     puts_success "Configuration loaded successfully."
@@ -210,6 +239,11 @@ cleanup() {
         puts_info "Cleaning up temporary directory: $ROOTFS_DIR"
         rm -rf "$ROOTFS_DIR"
     fi
+
+    if [[ -n "${DEBOOTSTRAP_CACHE_DIR:-}" ]] && [[ -d "$DEBOOTSTRAP_CACHE_DIR" ]]; then
+        puts_info "Cleaning up temporary debootstrap cache: $DEBOOTSTRAP_CACHE_DIR"
+        rm -rf "$DEBOOTSTRAP_CACHE_DIR"
+    fi
 }
 
 
@@ -222,8 +256,17 @@ create_archive() {
     
     local compression_tool="${COMPRESSION_TOOL:-xz}"
     local compression_level="${COMPRESSION_LEVEL:-9}"
+    local tar_opts=(
+        -I "$compression_tool -$compression_level"
+        -cf "$tar_path"
+        --exclude="var/cache/apt/archives"
+    )
+
+    if [[ $DEBUG_DEBOOTSTRAP -eq 1 ]]; then
+        tar_opts=(-I "$compression_tool -$compression_level" -cvf "$tar_path" --exclude="var/cache/apt/archives")
+    fi
     
-    if ! (cd "$ROOTFS_DIR" && tar -I "$compression_tool -$compression_level" -cvf "$tar_path" --exclude="var/cache/apt/archives" .); then
+    if ! (cd "$ROOTFS_DIR" && tar "${tar_opts[@]}" .); then
         puts_error "Failed to create archive."
         return 1
     fi
@@ -242,7 +285,7 @@ Description:
 
 Report bugs at: https://github.com/Nitrux/nuts/issues.
 
-Usage: $(basename "$0") [--conf FILE|DIR] <command>
+Usage: $(basename "$0") [--conf FILE|DIR] [--dbg-db] <command>
 
 Commands:
   create    Create and compress the root filesystem (rootfs).
@@ -251,6 +294,7 @@ Commands:
 Examples:
   sudo $(basename "$0") create
   sudo $(basename "$0") create --conf /etc/debrfs.d/minbase-testing-no-systemd.conf
+  sudo $(basename "$0") create --dbg-db
 EOF
 }
 
@@ -289,39 +333,61 @@ create_rootfs() {
 
     puts_info "Running debootstrap (this may take a while)..."
     puts_info "Variant: $ROOTFS_VARIANT | Arch: $ROOTFS_ARCH | Suite: $ROOTFS_SUITE"
-    
+
+    DEBOOTSTRAP_CACHE_DIR="$(mktemp -d /var/tmp/debrfs-debootstrap-cache.XXXXXX)"
+
     local debootstrap_cmd=(
         debootstrap
         --variant="$ROOTFS_VARIANT"
         --arch="$ROOTFS_ARCH"
-        --cache-dir=/tmp
+        --cache-dir="$DEBOOTSTRAP_CACHE_DIR"
     )
-    
+
     if [[ -n "${ROOTFS_INCLUDE:-}" ]]; then
         debootstrap_cmd+=(--include="$ROOTFS_INCLUDE")
     fi
-    
+
     if [[ -n "${ROOTFS_EXCLUDE:-}" ]]; then
         debootstrap_cmd+=(--exclude="$ROOTFS_EXCLUDE")
     fi
-    
+
     debootstrap_cmd+=("$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR")
 
-    local -a debootstrap_env=()
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
-        puts_info "Using custom debootstrap directory: $ROOTFS_DEBOOTSTRAP_DIR"
-        debootstrap_env=(DEBOOTSTRAP_DIR="$ROOTFS_DEBOOTSTRAP_DIR")
+    local debootstrap_log=""
+    if [[ $DEBUG_DEBOOTSTRAP -eq 0 ]]; then
+        debootstrap_log="$(mktemp /var/tmp/debrfs-debootstrap.XXXXXX.log)"
     fi
 
-    if ! "${debootstrap_env[@]}" "${debootstrap_cmd[@]}"; then
-        puts_error "debootstrap failed. Check your configuration and network connection."
-        exit 1
+    local debootstrap_runner
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
+        puts_info "Using custom debootstrap directory: $ROOTFS_DEBOOTSTRAP_DIR"
+        debootstrap_runner=(env DEBOOTSTRAP_DIR="$ROOTFS_DEBOOTSTRAP_DIR" "${debootstrap_cmd[@]}")
+    else
+        debootstrap_runner=("${debootstrap_cmd[@]}")
+    fi
+
+    if [[ $DEBUG_DEBOOTSTRAP -eq 1 ]]; then
+        if ! "${debootstrap_runner[@]}"; then
+            puts_error "debootstrap failed while creating the base system. The output above shows the failing step."
+            exit 1
+        fi
+    else
+        if ! "${debootstrap_runner[@]}" >"$debootstrap_log" 2>&1; then
+            puts_error "debootstrap failed while creating the base system. The last output lines are below."
+            tail -n 20 "$debootstrap_log" >&2
+            rm -f "$debootstrap_log"
+            exit 1
+        fi
+    fi
+
+    if [[ -n "$debootstrap_log" ]]; then
+        rm -f "$debootstrap_log"
     fi
 
     puts_success "debootstrap completed successfully."
 
     local final_dir="${OUTPUT_DIR:-$PWD}"
-    
+
     if [[ ! -d "$final_dir" ]]; then
         puts_info "Creating output directory: $final_dir"
         mkdir -p "$final_dir"
@@ -329,7 +395,7 @@ create_rootfs() {
 
     local temp_tar_path
     temp_tar_path="$(dirname "$ROOTFS_DIR")/$(basename "$TAR_FILE")"
-    
+
     local final_tar_path
     final_tar_path="$final_dir/$(basename "$TAR_FILE")"
 
@@ -350,7 +416,7 @@ create_rootfs() {
     fi
 
     puts_success "Root filesystem archive created at $final_tar_path"
-    
+
     if command -v du >/dev/null 2>&1;
     then
         local size
@@ -358,7 +424,6 @@ create_rootfs() {
         puts_info "Archive size: $size"
     fi
 }
-
 
 # -- Parse arguments before loading configuration.
 

@@ -19,6 +19,8 @@ Move `debrfs` to the `$PATH` and open a terminal:
 debrfs create --conf <file.conf>
 ```
 
+Use `--dbg-db` if you want to see the raw `debootstrap` and archive output while troubleshooting.
+
 `ROOTFS_DEBOOTSTRAP_DIR` is optional and can be set in a config file if you need an alternate debootstrap tree.
 
 Alternatively, place a config file in `/etc/debrfs.d/` and the utility will build it.
