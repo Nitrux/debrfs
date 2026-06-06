@@ -188,6 +188,16 @@ load_config() {
         fi
     done
 
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]] && [[ ! -d "$ROOTFS_DEBOOTSTRAP_DIR" ]]; then
+        puts_error "ROOTFS_DEBOOTSTRAP_DIR points to a missing directory: $ROOTFS_DEBOOTSTRAP_DIR"
+        exit 1
+    fi
+
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]] && [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/$ROOTFS_SUITE" ]]; then
+        puts_error "ROOTFS_DEBOOTSTRAP_DIR does not contain a debootstrap script for suite $ROOTFS_SUITE: $ROOTFS_DEBOOTSTRAP_DIR/$ROOTFS_SUITE"
+        exit 1
+    fi
+
     puts_success "Configuration loaded successfully."
 }
 
@@ -295,8 +305,14 @@ create_rootfs() {
     fi
     
     debootstrap_cmd+=("$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR")
-    
-    if ! "${debootstrap_cmd[@]}"; then
+
+    local -a debootstrap_env=()
+    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
+        puts_info "Using custom debootstrap directory: $ROOTFS_DEBOOTSTRAP_DIR"
+        debootstrap_env=(DEBOOTSTRAP_DIR="$ROOTFS_DEBOOTSTRAP_DIR")
+    fi
+
+    if ! "${debootstrap_env[@]}" "${debootstrap_cmd[@]}"; then
         puts_error "debootstrap failed. Check your configuration and network connection."
         exit 1
     fi

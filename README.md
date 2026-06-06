@@ -16,8 +16,10 @@ Create small Debian rootfs TAR files using `debbootstrap`.
 Move `debrfs` to the `$PATH` and open a terminal:
 
 ```sh
-debrfs create --config <file.conf>
+debrfs create --conf <file.conf>
 ```
+
+`ROOTFS_DEBOOTSTRAP_DIR` is optional and can be set in a config file if you need an alternate debootstrap tree.
 
 Alternatively, place a config file in `/etc/debrfs.d/` and the utility will build it.
 
