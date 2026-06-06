@@ -19,7 +19,7 @@ Move `debrfs` to the `$PATH` and open a terminal:
 debrfs create --config <file.conf>
 ```
 
-Alternatively, place a config file in `/etc/debrfs.d/` and the utility will build it,
+Alternatively, place a config file in `/etc/debrfs.d/` and the utility will build it.
 
 # Licensing
 
