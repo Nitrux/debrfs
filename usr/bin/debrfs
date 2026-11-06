@@ -14,8 +14,9 @@ set -eu
 TOOL_NAME="Debrfs"
 CONFIG_SOURCE=""
 COMMAND=""
-DEBUG_DEBOOTSTRAP=0
-DEBOOTSTRAP_CACHE_DIR=""
+DEBUG_BOOTSTRAP=0
+BOOTSTRAP_TEMP_KEYRING=""
+BOOTSTRAP_TEMP_KEY_DOWNLOAD=""
 
 
 # -- Define the default configuration directory.
@@ -88,7 +89,7 @@ parse_args() {
                 shift
                 ;;
             --dbg-db)
-                DEBUG_DEBOOTSTRAP=1
+                DEBUG_BOOTSTRAP=1
                 shift
                 ;;
             create|help)
@@ -195,40 +196,87 @@ load_config() {
         fi
     done
 
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
-        if [[ ! -d "$ROOTFS_DEBOOTSTRAP_DIR" ]]; then
-            puts_error "ROOTFS_DEBOOTSTRAP_DIR points to a missing directory: $ROOTFS_DEBOOTSTRAP_DIR"
-            exit 1
-        fi
-
-        if [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/functions" ]]; then
-            puts_error "ROOTFS_DEBOOTSTRAP_DIR is missing the expected functions file: $ROOTFS_DEBOOTSTRAP_DIR/functions"
-            exit 1
-        fi
-
-        if [[ ! -r "$ROOTFS_DEBOOTSTRAP_DIR/scripts/$ROOTFS_SUITE" ]]; then
-            puts_error "ROOTFS_DEBOOTSTRAP_DIR is missing the suite script for $ROOTFS_SUITE: $ROOTFS_DEBOOTSTRAP_DIR/scripts/$ROOTFS_SUITE"
-            exit 1
-        fi
+    if [[ -n "${ROOTFS_KEYRING:-}" ]] && [[ ! -r "$ROOTFS_KEYRING" || ( ! -f "$ROOTFS_KEYRING" && ! -d "$ROOTFS_KEYRING" ) ]]; then
+        puts_error "ROOTFS_KEYRING does not point to a readable keyring file or directory: $ROOTFS_KEYRING"
+        exit 1
     fi
 
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
-        local debootstrap_version
-        debootstrap_version="$(dpkg-query -W -f='${Version}' debootstrap 2>/dev/null || true)"
+    if [[ -n "${ROOTFS_KEYRING:-}" && -n "${ROOTFS_KEYRING_URL:-}" ]]; then
+        puts_error "Set only one of ROOTFS_KEYRING or ROOTFS_KEYRING_URL."
+        exit 1
+    fi
 
-        if [[ -z "$debootstrap_version" ]]; then
-            puts_error "Unable to determine the installed debootstrap package version."
-            exit 1
-        fi
-
-        if [[ "$debootstrap_version" != *devuan* ]]; then
-            puts_error "The installed debootstrap package is not the Devuan build: $debootstrap_version"
-            puts_error "This configuration uses ROOTFS_DEBOOTSTRAP_DIR, so debootstrap must be the Devuan-flavored package."
-            exit 1
-        fi
+    if [[ -n "${ROOTFS_KEYRING_URL:-}" ]]; then
+        local -a key_urls=()
+        local key_url
+        IFS=',' read -r -a key_urls <<< "$ROOTFS_KEYRING_URL"
+        for key_url in "${key_urls[@]}"; do
+            if [[ "$key_url" != https://* ]]; then
+                puts_error "Every ROOTFS_KEYRING_URL entry must use HTTPS."
+                exit 1
+            fi
+        done
     fi
 
     puts_success "Configuration loaded successfully."
+}
+
+
+# -- Download and prepare repository keyrings when key URLs are configured.
+
+prepare_keyring() {
+    if [[ -z "${ROOTFS_KEYRING_URL:-}" && -z "${ROOTFS_KEYRING:-}" ]]; then
+        return 0
+    fi
+
+    BOOTSTRAP_TEMP_KEYRING="$(mktemp -d /var/tmp/debrfs-keyring.XXXXXX)"
+    chmod 755 "$BOOTSTRAP_TEMP_KEYRING"
+
+    if [[ -n "${ROOTFS_KEYRING:-}" ]]; then
+        if [[ -d "$ROOTFS_KEYRING" ]]; then
+            cp -a -- "$ROOTFS_KEYRING"/. "$BOOTSTRAP_TEMP_KEYRING"/
+        else
+            cp -- "$ROOTFS_KEYRING" "$BOOTSTRAP_TEMP_KEYRING/keyring.gpg"
+        fi
+        find "$BOOTSTRAP_TEMP_KEYRING" -type d -exec chmod 755 {} +
+        find "$BOOTSTRAP_TEMP_KEYRING" -type f -exec chmod 644 {} +
+        return 0
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        puts_error "curl is required to download ROOTFS_KEYRING_URL."
+        exit 1
+    fi
+
+    if ! command -v gpg >/dev/null 2>&1; then
+        puts_error "gpg is required to prepare ROOTFS_KEYRING_URL."
+        exit 1
+    fi
+
+    local -a key_urls=()
+    local key_url
+    local key_index=0
+    IFS=',' read -r -a key_urls <<< "$ROOTFS_KEYRING_URL"
+
+    for key_url in "${key_urls[@]}"; do
+        BOOTSTRAP_TEMP_KEY_DOWNLOAD="$(mktemp /var/tmp/debrfs-keyring-download.XXXXXX)"
+
+        if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --output "$BOOTSTRAP_TEMP_KEY_DOWNLOAD" "$key_url"; then
+            puts_error "Failed to download repository key: $key_url"
+            exit 1
+        fi
+
+        if ! gpg --batch --yes --dearmor --output "$BOOTSTRAP_TEMP_KEYRING/key-$key_index.gpg" "$BOOTSTRAP_TEMP_KEY_DOWNLOAD"; then
+            puts_error "Failed to convert a downloaded repository key into a keyring."
+            exit 1
+        fi
+
+        chmod 644 "$BOOTSTRAP_TEMP_KEYRING/key-$key_index.gpg"
+        rm -f "$BOOTSTRAP_TEMP_KEY_DOWNLOAD"
+        BOOTSTRAP_TEMP_KEY_DOWNLOAD=""
+        ((key_index += 1))
+    done
 }
 
 
@@ -240,9 +288,12 @@ cleanup() {
         rm -rf "$ROOTFS_DIR"
     fi
 
-    if [[ -n "${DEBOOTSTRAP_CACHE_DIR:-}" ]] && [[ -d "$DEBOOTSTRAP_CACHE_DIR" ]]; then
-        puts_info "Cleaning up temporary debootstrap cache: $DEBOOTSTRAP_CACHE_DIR"
-        rm -rf "$DEBOOTSTRAP_CACHE_DIR"
+    if [[ -n "$BOOTSTRAP_TEMP_KEY_DOWNLOAD" ]]; then
+        rm -f "$BOOTSTRAP_TEMP_KEY_DOWNLOAD"
+    fi
+
+    if [[ -n "$BOOTSTRAP_TEMP_KEYRING" ]]; then
+        rm -rf "$BOOTSTRAP_TEMP_KEYRING"
     fi
 }
 
@@ -262,7 +313,7 @@ create_archive() {
         --exclude="var/cache/apt/archives"
     )
 
-    if [[ $DEBUG_DEBOOTSTRAP -eq 1 ]]; then
+    if [[ $DEBUG_BOOTSTRAP -eq 1 ]]; then
         tar_opts=(-I "$compression_tool -$compression_level" -cvf "$tar_path" --exclude="var/cache/apt/archives")
     fi
     
@@ -281,14 +332,14 @@ show_help() {
     cat <<EOF
 
 Description:
-    Create small Debian rootfs TAR files.
+    Create Debian rootfs TAR files with mmdebstrap.
 
 Report bugs at: https://github.com/Nitrux/nuts/issues.
 
 Usage: $(basename "$0") [--conf FILE|DIR] [--dbg-db] <command>
 
 Commands:
-  create    Create and compress the root filesystem (rootfs).
+  create    Create and compress the root filesystem (rootfs) with mmdebstrap.
   help      Display this help message.
 
 Examples:
@@ -307,84 +358,133 @@ create_rootfs() {
     local base_name="${TAR_NAME_BASE:-${TAR_FILE:-rootfs}}"
     TAR_FILE="${base_name}-$(date +%Y.%m.%d-%H.%M).tar.xz"
 
-    if ! command -v debootstrap >/dev/null 2>&1; then
-        puts_warning "debootstrap not found. Installing..."
-        if ! apt -y install --no-install-recommends debootstrap; then
-            puts_error "Failed to install debootstrap."
-            exit 1
-        fi
-    else
-        puts_info "debootstrap is already installed."
+    if ! command -v mmdebstrap >/dev/null 2>&1; then
+        puts_error "mmdebstrap is not installed. Install it before creating a rootfs."
+        exit 1
     fi
 
-    if [[ ! -d $ROOTFS_DIR ]]; then
-        puts_info "Creating rootfs directory: $ROOTFS_DIR"
-        if ! mkdir -p "$ROOTFS_DIR"; then
-            puts_error "Failed to create directory: $ROOTFS_DIR"
-            exit 1
-        fi
-    else
+    if [[ -d "$ROOTFS_DIR" ]]; then
         puts_warning "Directory exists. Cleaning: $ROOTFS_DIR"
-        if ! rm -rf "$ROOTFS_DIR" || ! mkdir -p "$ROOTFS_DIR"; then
+        if ! rm -rf -- "$ROOTFS_DIR"; then
             puts_error "Failed to clean directory: $ROOTFS_DIR"
             exit 1
         fi
     fi
 
-    puts_info "Running debootstrap (this may take a while)..."
+    puts_info "Creating rootfs directory: $ROOTFS_DIR"
+    if ! mkdir -p "$ROOTFS_DIR"; then
+        puts_error "Failed to create directory: $ROOTFS_DIR"
+        exit 1
+    fi
+
+    puts_info "Running mmdebstrap (this may take a while)..."
     puts_info "Variant: $ROOTFS_VARIANT | Arch: $ROOTFS_ARCH | Suite: $ROOTFS_SUITE"
 
-    DEBOOTSTRAP_CACHE_DIR="$(mktemp -d /var/tmp/debrfs-debootstrap-cache.XXXXXX)"
+    prepare_keyring
 
-    local debootstrap_cmd=(
-        debootstrap
+    local -a mmdebstrap_cmd=(
+        mmdebstrap
+        --mode=root
+        --format=directory
         --variant="$ROOTFS_VARIANT"
-        --arch="$ROOTFS_ARCH"
-        --cache-dir="$DEBOOTSTRAP_CACHE_DIR"
+        --architectures="$ROOTFS_ARCH"
     )
 
+    local bootstrap_keyring="$BOOTSTRAP_TEMP_KEYRING"
+    if [[ -n "$bootstrap_keyring" ]]; then
+        mmdebstrap_cmd+=(
+            --keyring="$bootstrap_keyring"
+            --setup-hook="mkdir -p \"\$1/etc/apt/trusted.gpg.d\" && cp -a \"$bootstrap_keyring\"/. \"\$1/etc/apt/trusted.gpg.d/\""
+        )
+    fi
+
+    if [[ -n "${ROOTFS_KEYRING:-}${ROOTFS_KEYRING_URL:-}" ]]; then
+        mmdebstrap_cmd+=(
+            --skip=check/signed-by
+            --aptopt='Apt::Key::gpgvcommand "/usr/bin/gpgv"'
+        )
+    fi
+
     if [[ -n "${ROOTFS_INCLUDE:-}" ]]; then
-        debootstrap_cmd+=(--include="$ROOTFS_INCLUDE")
+        mmdebstrap_cmd+=(--include="$ROOTFS_INCLUDE")
+    fi
+
+    if [[ -n "${ROOTFS_REPOSITORY_PRIORITIES:-}" ]]; then
+        local -a repository_priorities=()
+        local repository_priority
+        local repository_origin
+        local priority
+        IFS=',' read -r -a repository_priorities <<< "$ROOTFS_REPOSITORY_PRIORITIES"
+
+        for repository_priority in "${repository_priorities[@]}"; do
+            if [[ "$repository_priority" != *:* ]]; then
+                puts_error "ROOTFS_REPOSITORY_PRIORITIES entries must use host:priority format."
+                exit 1
+            fi
+
+            repository_origin="${repository_priority%%:*}"
+            priority="${repository_priority##*:}"
+            if [[ ! "$repository_origin" =~ ^[A-Za-z0-9.-]+$ || ! "$priority" =~ ^-?[0-9]+$ ]]; then
+                puts_error "Invalid repository priority entry: $repository_priority"
+                exit 1
+            fi
+
+            mmdebstrap_cmd+=(
+                --setup-hook="mkdir -p \"\$1/etc/apt/preferences.d\" && printf 'Package: *\\nPin: origin %s\\nPin-Priority: %s\\n\\n' '$repository_origin' '$priority' >> \"\$1/etc/apt/preferences.d/98debrfs-repository-priorities\""
+            )
+        done
     fi
 
     if [[ -n "${ROOTFS_EXCLUDE:-}" ]]; then
-        debootstrap_cmd+=(--exclude="$ROOTFS_EXCLUDE")
+        local excluded_packages="${ROOTFS_EXCLUDE//,/ }"
+        local package
+        for package in $excluded_packages; do
+            if [[ ! "$package" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9]+)?$ ]]; then
+                puts_error "Invalid package name in ROOTFS_EXCLUDE: $package"
+                exit 1
+            fi
+        done
+
+        mmdebstrap_cmd+=(
+            --setup-hook="mkdir -p \"\$1/etc/apt/preferences.d\" && printf 'Package: %s\\nPin: version *\\nPin-Priority: -1\\n' '$excluded_packages' > \"\$1/etc/apt/preferences.d/99debrfs-exclude\""
+            --customize-hook="rm -f \"\$1/etc/apt/preferences.d/99debrfs-exclude\""
+        )
     fi
 
-    debootstrap_cmd+=("$ROOTFS_SUITE" "$ROOTFS_DIR" "$ROOTFS_MIRROR")
-
-    local debootstrap_log=""
-    if [[ $DEBUG_DEBOOTSTRAP -eq 0 ]]; then
-        debootstrap_log="$(mktemp /var/tmp/debrfs-debootstrap.XXXXXX.log)"
-    fi
-
-    local debootstrap_runner
-    if [[ -n "${ROOTFS_DEBOOTSTRAP_DIR:-}" ]]; then
-        puts_info "Using custom debootstrap directory: $ROOTFS_DEBOOTSTRAP_DIR"
-        debootstrap_runner=(env DEBOOTSTRAP_DIR="$ROOTFS_DEBOOTSTRAP_DIR" "${debootstrap_cmd[@]}")
-    else
-        debootstrap_runner=("${debootstrap_cmd[@]}")
-    fi
-
-    if [[ $DEBUG_DEBOOTSTRAP -eq 1 ]]; then
-        if ! "${debootstrap_runner[@]}"; then
-            puts_error "debootstrap failed while creating the base system. The output above shows the failing step."
+    local -a mirrors=()
+    local mirror
+    IFS=',' read -r -a mirrors <<< "$ROOTFS_MIRROR"
+    for mirror in "${mirrors[@]}"; do
+        if [[ -z "$mirror" ]]; then
+            puts_error "ROOTFS_MIRROR contains an empty mirror entry."
             exit 1
         fi
-    else
-        if ! "${debootstrap_runner[@]}" >"$debootstrap_log" 2>&1; then
-            puts_error "debootstrap failed while creating the base system. The last output lines are below."
-            tail -n 20 "$debootstrap_log" >&2
-            rm -f "$debootstrap_log"
+    done
+
+    mmdebstrap_cmd+=("$ROOTFS_SUITE" "$ROOTFS_DIR" "${mirrors[@]}")
+
+    local bootstrap_log=""
+    if [[ $DEBUG_BOOTSTRAP -eq 0 ]]; then
+        bootstrap_log="$(mktemp /var/tmp/debrfs-mmdebstrap.XXXXXX.log)"
+    fi
+
+    if [[ $DEBUG_BOOTSTRAP -eq 1 ]]; then
+        if ! "${mmdebstrap_cmd[@]}"; then
+            puts_error "mmdebstrap failed while creating the base system. The output above shows the failing step."
             exit 1
         fi
+    elif ! "${mmdebstrap_cmd[@]}" >"$bootstrap_log" 2>&1; then
+        puts_error "mmdebstrap failed while creating the base system. The last output lines are below."
+        tail -n 20 "$bootstrap_log" >&2
+        rm -f "$bootstrap_log"
+        exit 1
     fi
 
-    if [[ -n "$debootstrap_log" ]]; then
-        rm -f "$debootstrap_log"
+    if [[ -n "$bootstrap_log" ]]; then
+        rm -f "$bootstrap_log"
     fi
 
-    puts_success "debootstrap completed successfully."
+    puts_success "mmdebstrap completed successfully."
 
     local final_dir="${OUTPUT_DIR:-$PWD}"
 
@@ -411,14 +511,13 @@ create_rootfs() {
 
     puts_info "Moving archive to $final_tar_path..."
     if ! mv "$temp_tar_path" "$final_tar_path"; then
-         puts_error "Failed to move archive to destination."
-         exit 1
+        puts_error "Failed to move archive to destination."
+        exit 1
     fi
 
     puts_success "Root filesystem archive created at $final_tar_path"
 
-    if command -v du >/dev/null 2>&1;
-    then
+    if command -v du >/dev/null 2>&1; then
         local size
         size=$(du -h "$final_tar_path" | cut -f1)
         puts_info "Archive size: $size"

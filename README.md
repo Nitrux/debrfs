@@ -6,24 +6,22 @@
 
 # Introduction
 
-Create small Debian rootfs TAR files using `debbootstrap`.
+Create small Debian rootfs TAR files using [mmdebstrap](https://manpages.debian.org/mmdebstrap).
 
 > [!WARNING]
 > `debrfs` does not work in unprivileged containers.
 
 # Usage
 
-Move `debrfs` to the `$PATH` and open a terminal:
+Install `mmdebstrap`, move `debrfs` to your `$PATH`, and run:
 
 ```sh
-debrfs create --conf <file.conf>
+sudo debrfs create --conf <file.conf>
 ```
 
-Use `--dbg-db` if you want to see the raw `debootstrap` and archive output while troubleshooting.
+Use `--dbg-db` to show mmdebstrap and archive output while troubleshooting. Alternatively, place a config file in `/etc/debrfs.d/` and run `sudo debrfs create`.
 
-`ROOTFS_DEBOOTSTRAP_DIR` is optional and can be set in a config file if you need an alternate debootstrap tree.
-
-Alternatively, place a config file in `/etc/debrfs.d/` and the utility will build it.
+Set `ROOTFS_MIRROR` to one repository URL or a comma-separated list for the configured suite. Set `ROOTFS_REPOSITORY_PRIORITIES` to comma-separated `host:priority` entries to assign APT repository priorities before package resolution. `ROOTFS_KEYRING_URL` accepts one or more comma-separated HTTPS key URLs; `ROOTFS_KEYRING` accepts an existing keyring file or directory. When a custom keyring is configured, debrfs copies it into the rootfs APT trusted keyring directory, skips mmdebstrap’s automatic `Signed-By` selection, and uses `gpgv` to verify repository signatures, including signatures made by subkeys.
 
 # Licensing
 
